@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     ffmpeg \
     curl \
+    hipblas-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -29,6 +30,7 @@ RUN git clone --depth=1 https://github.com/ggerganov/whisper.cpp.git .
 RUN cmake -B build \
     -DGGML_HIP=ON \
     -DAMDGPU_TARGETS="${AMDGPU_TARGETS}" \
+    -DCMAKE_PREFIX_PATH=/opt/rocm \
     -DCMAKE_BUILD_TYPE=Release
 
 # Build the binaries using all available CPU cores
