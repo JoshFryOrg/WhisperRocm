@@ -13,8 +13,19 @@ jobs:
     docker:
         runs-on: ubuntu-latest
 
+        # Build both backends in parallel: the HIP/ROCm image (:latest) and the
+        # Vulkan image (:vulkan). fail-fast off so one backend failing doesn't
+        # cancel the other's publish.
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - dockerfile: 'Dockerfile'
+                      tag: 'latest'
+                    - dockerfile: 'Dockerfile.vulkan'
+                      tag: 'vulkan'
+
         env:
-            DOCKERFILE_PATH: 'Dockerfile'
             DOCKERFILE_CONTEXT: '.'
             DOCKER_IMAGE_NAME: 'whisper-rocm'
             DOCKER_REGISTRY: 'joshfryup'
@@ -36,8 +47,8 @@ jobs:
             - name: Build and Push Docker image
               uses: docker/build-push-action@v7
               with:
-                file: ${{ env.DOCKERFILE_PATH }}
+                file: ${{ matrix.dockerfile }}
                 context: ${{ env.DOCKERFILE_CONTEXT }}
                 push: true
                 tags: |
-                  ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}:latest
+                  ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.tag }}

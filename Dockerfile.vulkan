@@ -1,13 +1,17 @@
-# Use the official AMD ROCm development base image
-FROM rocm/dev-ubuntu-24.04:latest
+# Vulkan variant: builds whisper.cpp with the GGML Vulkan backend instead of HIP/ROCm.
+# On AMD RDNA cards the HIP runtime pins the GPU to 100% utilisation for the whole
+# life of the process (a ROCm bug, not whisper.cpp); the Vulkan backend via Mesa RADV
+# does not, so the GPU idles properly even while the model is resident.
+# Transcription speed can differ from the HIP build, so benchmark before adopting it.
+FROM ubuntu:24.04
 
-# Set non-interactive timezone to prevent tzdata from blocking the build
+# Set non-interactive timezone to prevent tzdata from blocking the build.
 ENV DEBIAN_FRONTEND=noninteractive
 
-# ROCm/HIP needs explicit GPU architecture targets when building in CI.
-ARG AMDGPU_TARGETS=gfx1100;gfx1101;gfx1102;gfx1200;gfx1201
-
-# Install build dependencies and ffmpeg (essential for audio processing)
+# Build deps + the Vulkan SDK pieces (loader headers and the glsl -> SPIR-V compiler
+# the ggml shader generator needs), the runtime Vulkan loader + Mesa RADV driver, and
+# ffmpeg for audio handling. No ROCm: RADV targets any RDNA GPU from SPIR-V at runtime,
+# so there is no per-architecture build target to set.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     cmake \
@@ -17,24 +21,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     ffmpeg \
     curl \
-    hipblas-dev \
-    rocblas-dev \
+    libvulkan-dev \
+    glslc \
+    glslang-tools \
+    libvulkan1 \
+    mesa-vulkan-drivers \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Clone the whisper.cpp repository
+# Clone the whisper.cpp repository.
 RUN git clone --depth=1 https://github.com/ggerganov/whisper.cpp.git .
 
-# Configure and build with AMD HIP (ROCm) support.
-# The GGML_HIP=ON flag is what triggers the AMD GPU compilation.
+# Configure and build with the Vulkan backend.
+# GGML_VULKAN=ON is what selects the Vulkan compute path instead of HIP/CUDA/CPU.
 RUN cmake -B build \
-    -DGGML_HIP=ON \
-    -DAMDGPU_TARGETS="${AMDGPU_TARGETS}" \
-    -DCMAKE_PREFIX_PATH=/opt/rocm \
+    -DGGML_VULKAN=ON \
     -DCMAKE_BUILD_TYPE=Release
 
-# Build the binaries using all available CPU cores
+# Build the binaries using all available CPU cores.
 RUN cmake --build build -j $(nproc)
 
 # Full large-v3 (~3 GB), the most accurate model of the family.
