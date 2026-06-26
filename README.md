@@ -2,7 +2,21 @@
 
 Docker image for running `whisper.cpp`'s OpenAI-compatible transcription server with AMD ROCm/HIP acceleration.
 
-The image builds `whisper.cpp` from source inside AMD's `rocm/dev-ubuntu-24.04:latest` development image, enables `GGML_HIP`, compiles for explicit AMD GPU targets, downloads the full `large-v3` model plus a Silero VAD model, and exposes the server on port `8080`. Voice-activity detection is enabled by default so the model doesn't hallucinate filler over silence/music; its parameters mirror `faster-whisper`'s VAD defaults (min-silence 2000 ms, speech-pad 400 ms, threshold 0.5).
+The image builds `whisper.cpp` from source inside AMD's `rocm/dev-ubuntu-24.04:latest` development image, enables `GGML_HIP`, compiles for explicit AMD GPU targets, and exposes the server on port `8080`. Voice-activity detection is enabled by default so the model doesn't hallucinate filler over silence/music; its parameters mirror `faster-whisper`'s VAD defaults (min-silence 2000 ms, speech-pad 400 ms, threshold 0.5).
+
+The models are **not** baked into the image. On first startup the supervisor downloads the full `large-v3` model plus a Silero VAD model into `/models` (using `whisper.cpp`'s own download scripts) if they aren't already there. Mount a volume at `/models` so the ~3 GB download happens only once and persists across rebuilds and restarts. See [Models volume](#models-volume).
+
+## Models volume
+
+The container expects its models in `/models` and downloads them there on startup if missing. Mount a host directory or named volume so they survive container recreation and can be shared between the ROCm and Vulkan images:
+
+```bash
+-v whisper-models:/models      # named volume
+# or
+-v /path/on/host/models:/models  # host directory
+```
+
+The download is to disk only — the model is loaded into VRAM lazily on the first transcription request (see below), so this doesn't change the on-demand behaviour. If the volume already contains `ggml-large-v3.bin` and `ggml-silero-v5.1.2.bin`, startup skips the download entirely. The model files default to `large-v3` and `silero-v5.1.2`; override with the `WHISPER_MODEL` / `VAD_MODEL` / `MODELS_DIR` environment variables (the entrypoint paths must match `MODELS_DIR`).
 
 ## On-demand model loading
 
@@ -32,6 +46,9 @@ services:
     restart: unless-stopped
     ports:
       - '8080:8080'
+    # Models download here on first start and persist across restarts/rebuilds.
+    volumes:
+      - whisper-models:/models
     # Optional: seconds idle before the model is unloaded to free VRAM (default 300).
     environment:
       - WHISPER_IDLE_TTL=300
@@ -43,6 +60,9 @@ services:
     ipc: host
     security_opt:
       - seccomp=unconfined
+
+volumes:
+  whisper-models:
 ```
 
 ## Docker Run
@@ -56,6 +76,7 @@ docker run --rm \
   --ipc=host \
   --security-opt seccomp=unconfined \
   -p 8080:8080 \
+  -v whisper-models:/models \
   joshfryup/whisper-rocm:latest
 ```
 
@@ -91,6 +112,7 @@ docker run --rm \
   --device=/dev/dri \
   --group-add video \
   -p 8080:8080 \
+  -v whisper-models:/models \
   whisper-vulkan
 ```
 

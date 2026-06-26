@@ -12,12 +12,21 @@ transparently reloads it.
 /health is answered here directly, so a health probe neither loads the model nor
 keeps it warm.
 
+The model files are not baked into the image. On startup the supervisor ensures
+the transcription and VAD models exist in MODELS_DIR (a mountable directory) and
+downloads them once via whisper.cpp's own scripts if they are missing, so the
+model persists in the mounted volume across container rebuilds and restarts.
+
 Configuration (all via environment):
   HOST                  public bind address (default 0.0.0.0)
   PORT                  public port (default 8080)
   INTERNAL_PORT         private port the real server binds (default 8081)
   WHISPER_IDLE_TTL      seconds idle before the model is unloaded (default 300)
   WHISPER_START_TIMEOUT seconds to wait for the model to load (default 180)
+  MODELS_DIR            directory the models live in / are downloaded to (default /models)
+  WHISPER_MODEL         ggml model name to ensure present (default large-v3)
+  VAD_MODEL             Silero VAD model name to ensure present (default silero-v5.1.2)
+  WHISPER_CPP_DIR       whisper.cpp checkout holding the download scripts (default /app)
 
 The child command (the whisper-server binary and its flags) is passed as this
 script's own arguments; the supervisor appends --host/--port so the child binds
@@ -41,6 +50,11 @@ INTERNAL_PORT = int(os.environ.get("INTERNAL_PORT", "8081"))
 IDLE_TTL = float(os.environ.get("WHISPER_IDLE_TTL", "300"))
 START_TIMEOUT = float(os.environ.get("WHISPER_START_TIMEOUT", "180"))
 
+MODELS_DIR = os.environ.get("MODELS_DIR", "/models")
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "large-v3")
+VAD_MODEL = os.environ.get("VAD_MODEL", "silero-v5.1.2")
+WHISPER_CPP_DIR = os.environ.get("WHISPER_CPP_DIR", "/app")
+
 # Hop-by-hop headers must not be forwarded across a proxy hop (RFC 7230 6.1).
 HOP_BY_HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
@@ -57,6 +71,28 @@ if not CHILD_BASE:
 
 def log(msg):
     print(f"[supervisor] {msg}", flush=True)
+
+
+def _ensure_model(script_name, model_name):
+    """Download ggml-<model_name>.bin into MODELS_DIR via whisper.cpp's own script
+    if it isn't already there. Both download-ggml-model.sh and download-vad-model.sh
+    take the model name and an output directory and write ggml-<name>.bin into it."""
+    target = os.path.join(MODELS_DIR, f"ggml-{model_name}.bin")
+    if os.path.exists(target) and os.path.getsize(target) > 0:
+        log(f"model present: {target}")
+        return
+    script = os.path.join(WHISPER_CPP_DIR, "models", script_name)
+    log(f"model {model_name} missing from {MODELS_DIR}; downloading once via {script_name}")
+    subprocess.run(["bash", script, model_name, MODELS_DIR], check=True)
+    if not (os.path.exists(target) and os.path.getsize(target) > 0):
+        raise RuntimeError(f"download of {model_name} did not produce {target}")
+    log(f"model ready: {target}")
+
+
+def ensure_models():
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    _ensure_model("download-ggml-model.sh", WHISPER_MODEL)
+    _ensure_model("download-vad-model.sh", VAD_MODEL)
 
 
 class Manager:
@@ -207,6 +243,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    # Fetch the models into the mounted dir before serving, if they aren't already
+    # there. This downloads to disk only; the model is not loaded into VRAM until
+    # the first transcription request, so on-demand loading is unaffected.
+    ensure_models()
+
     threading.Thread(target=idle_monitor, daemon=True).start()
 
     def on_signal(signum, frame):
