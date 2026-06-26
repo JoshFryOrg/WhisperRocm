@@ -2,7 +2,7 @@
 
 Docker image for running `whisper.cpp`'s OpenAI-compatible transcription server with AMD ROCm/HIP acceleration.
 
-The image builds `whisper.cpp` from source inside AMD's `rocm/dev-ubuntu-24.04:latest` development image, enables `GGML_HIP`, compiles for explicit AMD GPU targets, downloads the `large-v3-q5_0` model, and exposes the server on port `8080`.
+The image builds `whisper.cpp` from source inside AMD's `rocm/dev-ubuntu-24.04:latest` development image, enables `GGML_HIP`, compiles for explicit AMD GPU targets, downloads the full `large-v3` model plus a Silero VAD model, and exposes the server on port `8080`. Voice-activity detection is enabled by default so the model doesn't hallucinate filler over silence/music; its parameters mirror `faster-whisper`'s VAD defaults (min-silence 2000 ms, speech-pad 400 ms, threshold 0.5).
 
 ## Docker Compose
 
@@ -62,10 +62,21 @@ The server exposes the OpenAI-compatible transcription endpoint at:
 http://localhost:8080/v1/audio/transcriptions
 ```
 
+`whisper.cpp`'s server serves transcription at `/inference` by default; the image starts it with
+`--inference-path /v1/audio/transcriptions` so OpenAI-compatible clients reach it without any client-side
+path configuration. A health check is available at `/health`.
+
 Example request:
 
 ```bash
 curl http://localhost:8080/v1/audio/transcriptions \
   -F file=@audio.mp3 \
-  -F model=whisper-1
+  -F model=whisper-1 \
+  -F response_format=verbose_json
+```
+
+Clients that take an OpenAI base URL should point at the `/v1` base; they append `/audio/transcriptions` themselves:
+
+```text
+http://<host>:8080/v1
 ```

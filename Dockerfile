@@ -37,14 +37,17 @@ RUN cmake -B build \
 # Build the binaries using all available CPU cores
 RUN cmake --build build -j $(nproc)
 
-# Download a model.
-# We use large-v3-q5_0 here: it offers the accuracy of the large-v3 model
-# but is quantized to fit comfortably inside most AMD GPUs' VRAM (~500MB + model size).
-RUN bash ./models/download-ggml-model.sh large-v3-q5_0
+# Full large-v3 (~3 GB), the most accurate model of the family.
+# The targeted AMD cards have the VRAM to keep it resident.
+RUN bash ./models/download-ggml-model.sh large-v3
+
+# Silero VAD model so VAD can drop non-speech, stopping the model
+# hallucinating filler (e.g. "Thank you.") over silence/music.
+RUN bash ./models/download-vad-model.sh silero-v5.1.2
 
 # Expose the API port
 EXPOSE 8080
 
-# Start the whisper-server.
-# This exposes the standard OpenAI compatible API: /v1/audio/transcriptions
-ENTRYPOINT ["./build/bin/whisper-server", "-m", "models/ggml-large-v3-q5_0.bin", "--host", "0.0.0.0", "--port", "8080"]
+# --inference-path serves the OpenAI route (default /inference); --vad + --vad-* enable VAD tuned to
+# faster-whisper's default parameters (min-silence 2000, speech-pad 400, threshold 0.5).
+ENTRYPOINT ["./build/bin/whisper-server", "-m", "models/ggml-large-v3.bin", "--host", "0.0.0.0", "--port", "8080", "--inference-path", "/v1/audio/transcriptions", "--vad", "--vad-model", "models/ggml-silero-v5.1.2.bin", "--vad-threshold", "0.5", "--vad-min-speech-duration-ms", "0", "--vad-min-silence-duration-ms", "2000", "--vad-speech-pad-ms", "400"]
