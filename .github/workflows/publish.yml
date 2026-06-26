@@ -5,7 +5,8 @@ on:
         branches:
             - main
     schedule:
-        - cron: '30 0 * * *'
+        # Weekly, Sunday 00:30 UTC, to pick up upstream whisper.cpp and base-image updates.
+        - cron: '30 0 * * 0'
     workflow_dispatch:
 
 jobs:
