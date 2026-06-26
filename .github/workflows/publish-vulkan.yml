@@ -1,13 +1,13 @@
-name: Publish (ROCm)
+name: Publish (Vulkan)
 
 on:
     push:
         branches:
             - main
-        # Only rebuild the ROCm image when its own inputs change. supervisor.py is
-        # baked into both images, so it triggers this and the Vulkan workflow.
+        # Only rebuild the Vulkan image when its own inputs change. supervisor.py is
+        # baked into both images, so it triggers this and the ROCm workflow.
         paths:
-            - 'Dockerfile'
+            - 'Dockerfile.vulkan'
             - 'supervisor.py'
     schedule:
         # Weekly, Sunday 00:30 UTC, to pick up upstream whisper.cpp and base-image updates.
@@ -19,12 +19,12 @@ jobs:
         runs-on: ubuntu-latest
 
         env:
-            DOCKERFILE_PATH: 'Dockerfile'
+            DOCKERFILE_PATH: 'Dockerfile.vulkan'
             DOCKERFILE_CONTEXT: '.'
             DOCKER_IMAGE_NAME: 'whisper-rocm'
             DOCKER_REGISTRY: 'joshfryup'
             DOCKER_USERNAME: 'joshfryup'
-            DOCKER_TAG: 'latest'
+            DOCKER_TAG: 'vulkan'
 
         steps:
             - name: Checkout repository

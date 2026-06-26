@@ -8,8 +8,9 @@ FROM ubuntu:24.04
 # Set non-interactive timezone to prevent tzdata from blocking the build.
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Build deps + the Vulkan SDK pieces (loader headers and the glsl -> SPIR-V compiler
-# the ggml shader generator needs), the runtime Vulkan loader + Mesa RADV driver, and
+# Build deps + the Vulkan SDK pieces (loader headers, the glsl -> SPIR-V compiler the
+# ggml shader generator needs, and the SPIR-V registry headers its CMake requires),
+# the runtime Vulkan loader + Mesa RADV driver, and
 # ffmpeg for audio handling. No ROCm: RADV targets any RDNA GPU from SPIR-V at runtime,
 # so there is no per-architecture build target to set.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -24,6 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libvulkan-dev \
     glslc \
     glslang-tools \
+    spirv-headers \
     libvulkan1 \
     mesa-vulkan-drivers \
     && rm -rf /var/lib/apt/lists/*
