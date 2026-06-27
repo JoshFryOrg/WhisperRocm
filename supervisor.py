@@ -17,6 +17,13 @@ the transcription and VAD models exist in MODELS_DIR (a mountable directory) and
 downloads them once via whisper.cpp's own scripts if they are missing, so the
 model persists in the mounted volume across container rebuilds and restarts.
 
+It also adapts the transcription request so a client written for faster-whisper
+or the OpenAI API drives this whisper.cpp server unchanged: a few form fields use
+different names between those APIs and whisper.cpp, so the supervisor renames them
+on the way through (see FORM_FIELD_RENAMES). The rewrite is strictly defensive: on
+anything unexpected it forwards the body untouched, so it can only improve
+compatibility, never corrupt a request.
+
 Configuration (all via environment):
   HOST                  public bind address (default 0.0.0.0)
   PORT                  public port (default 8080)
@@ -35,6 +42,7 @@ the private internal port.
 
 import http.client
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -60,6 +68,66 @@ HOP_BY_HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailers", "transfer-encoding", "upgrade",
 }
+
+# Transcription form fields whose NAME differs between the faster-whisper / OpenAI APIs and whisper.cpp's
+# server, mapped onto whisper.cpp's own names so a client written for those APIs works here unchanged. Fields
+# whisper.cpp does not recognise (e.g. compression_ratio_threshold, no_repeat_ngram_size,
+# timestamp_granularities[]) are left as-is and simply ignored by the server; whisper.cpp's own defaults cover
+# what they asked for (entropy_thold ~2.4 is its degenerate-output + temperature-fallback guard, and
+# token_timestamps is on by default so verbose_json already carries per-word times).
+FORM_FIELD_RENAMES = {
+    b"vad_filter": b"vad",  # same boolean meaning (enable voice-activity detection)
+}
+# Boolean fields whose SENSE is inverted between the two APIs: rename and flip the value.
+# faster-whisper condition_on_previous_text == NOT whisper.cpp no_context.
+FORM_FIELD_INVERTED_RENAMES = {
+    b"condition_on_previous_text": b"no_context",
+}
+_TRUEY = {b"true", b"1", b"yes", b"on"}
+
+
+def _flip_bool(value):
+    """Return the textual negation of a boolean form value (whatever isn't truthy becomes "true")."""
+    return b"false" if value.strip().lower() in _TRUEY else b"true"
+
+
+def _rewrite_multipart(body, boundary):
+    """Rename the known faster-whisper/OpenAI form fields to whisper.cpp's names in a multipart body.
+
+    Splits on the multipart boundary (which by definition never occurs inside any part's content, so the
+    binary file part is preserved byte for byte) and rewrites only the small text parts whose name we
+    recognise. Defensive by construction: any part we don't recognise is left exactly as-is, and the caller
+    falls back to the original body if this raises, so a parse miss can never corrupt the request."""
+    delim = b"--" + boundary
+    segments = body.split(delim)
+    changed = False
+    for idx, seg in enumerate(segments):
+        # A real part is "\r\n<headers>\r\n\r\n<content>\r\n"; the preamble ("") and closing ("--\r\n") are not.
+        if not seg.startswith(b"\r\n"):
+            continue
+        head_end = seg.find(b"\r\n\r\n")
+        if head_end == -1:
+            continue
+        headers = seg[2:head_end]
+        match = re.search(rb'name="([^"]*)"', headers)
+        if not match:
+            continue
+        name = match.group(1)
+        if name in FORM_FIELD_RENAMES:
+            new_headers = headers.replace(b'name="' + name + b'"', b'name="' + FORM_FIELD_RENAMES[name] + b'"', 1)
+            segments[idx] = b"\r\n" + new_headers + seg[head_end:]
+            changed = True
+        elif name in FORM_FIELD_INVERTED_RENAMES:
+            content_start = head_end + 4
+            content_end = seg.rfind(b"\r\n")  # the trailing CRLF before the next delimiter
+            if content_end <= content_start:
+                continue
+            new_name = FORM_FIELD_INVERTED_RENAMES[name]
+            new_headers = headers.replace(b'name="' + name + b'"', b'name="' + new_name + b'"', 1)
+            new_value = _flip_bool(seg[content_start:content_end])
+            segments[idx] = b"\r\n" + new_headers + seg[head_end:content_start] + new_value + seg[content_end:]
+            changed = True
+    return delim.join(segments) if changed else body
 
 # Everything after the script name is the child command, minus host/port which we
 # add ourselves so the child only ever binds the private internal port.
@@ -201,6 +269,16 @@ class Handler(BaseHTTPRequestHandler):
     def _proxy(self):
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(length) if length else None
+        # Adapt faster-whisper/OpenAI form-field names to whisper.cpp's before forwarding. Only multipart
+        # POSTs (transcription requests) are touched; on any parse trouble we forward the body unchanged.
+        ctype = self.headers.get("Content-Type", "")
+        if body and self.command == "POST" and ctype.startswith("multipart/form-data"):
+            bmatch = re.search(r'boundary=("?)([^";]+)\1', ctype)
+            if bmatch:
+                try:
+                    body = _rewrite_multipart(body, bmatch.group(2).encode("latin-1"))
+                except Exception as exc:
+                    log(f"form-field adapter skipped, forwarding request unchanged: {exc}")
         try:
             manager.begin_request()
         except Exception as exc:
@@ -211,6 +289,9 @@ class Handler(BaseHTTPRequestHandler):
             conn = http.client.HTTPConnection(INTERNAL_HOST, INTERNAL_PORT, timeout=900)
             headers = {k: v for k, v in self.headers.items()
                        if k.lower() not in HOP_BY_HOP and k.lower() != "host"}
+            # The rewrite can change the body length (renamed field, flipped value), so always send the real one.
+            if body is not None:
+                headers["Content-Length"] = str(len(body))
             conn.request(self.command, self.path, body=body, headers=headers)
             resp = conn.getresponse()
             data = resp.read()

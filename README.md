@@ -142,3 +142,30 @@ Clients that take an OpenAI base URL should point at the `/v1` base; they append
 ```text
 http://<host>:8080/v1
 ```
+
+### faster-whisper / OpenAI parameter compatibility
+
+A few transcription parameters have different names (or senses) between `faster-whisper` (and OpenAI-style
+servers built on it) and `whisper.cpp`. So a client written for those APIs works against this server unchanged,
+the supervisor renames them on the way through before handing the request to `whisper.cpp`:
+
+| Client sends | Forwarded to `whisper.cpp` as | Notes |
+| --- | --- | --- |
+| `vad_filter` | `vad` | Same boolean; enables voice-activity detection. (VAD is also on by default via the entrypoint.) |
+| `condition_on_previous_text` | `no_context` (value inverted) | `no_context` is the negation; `condition_on_previous_text=false` becomes `no_context=true`. |
+
+The rewrite is strictly defensive: it only touches those small text fields and forwards the request unchanged
+on anything unexpected, so it never corrupts the audio part.
+
+Parameters `whisper.cpp` has no equivalent for are passed through and harmlessly ignored, because its own
+defaults already cover them:
+
+- `compression_ratio_threshold` — `whisper.cpp` uses `entropy_thold` (default `2.4`) for the same job: it
+  flags degenerate/over-repetitive output and triggers temperature fallback.
+- `no_repeat_ngram_size` — no `whisper.cpp` equivalent (its anti-repetition relies on the above plus VAD).
+- `timestamp_granularities[]` — `whisper.cpp` returns per-segment **and** per-word timestamps in
+  `verbose_json` by default (`token_timestamps`), so word-level times are present without it.
+
+The net effect is an anti-repetition posture equivalent to faster-whisper's recommended one, on by default:
+no cross-segment context carry-over (`no_context`), temperature fallback on degenerate output
+(`entropy_thold`), and VAD to drop non-speech.
