@@ -69,8 +69,9 @@ EXPOSE 8080
 # --inference-path serves the OpenAI route (default /inference); --vad + --vad-* enable VAD tuned to
 # faster-whisper's default parameters (min-silence 2000, speech-pad 400, threshold 0.5).
 # Anti-hallucination (the large models can emit a stock end-card phrase like "subscribe to my channel" /
-# "Transcription by ..." over silence/music): --no-context stops a hallucination at one 30s chunk conditioning
-# (and so chaining into) the next, --suppress-nst suppresses non-speech tokens, and --beam-size 5 replaces the
-# default greedy decode (which is more prone to repetition/hallucination loops) with beam search. Beam search
-# is slower; accuracy/reliability is preferred over speed here.
-ENTRYPOINT ["python3", "supervisor.py", "./build/bin/whisper-server", "--inference-path", "/v1/audio/transcriptions", "--vad", "--vad-threshold", "0.5", "--vad-min-speech-duration-ms", "0", "--vad-min-silence-duration-ms", "2000", "--vad-speech-pad-ms", "400", "--no-context", "--suppress-nst", "--beam-size", "5"]
+# "Transcription by ..." over silence/music): --max-context 0 carries no previously-decoded text between the
+# internal 30s chunks (whisper-server has no --no-context flag; max-context 0 is the equivalent), so a
+# hallucination in one chunk can't condition (chain into) the next; --suppress-nst suppresses non-speech tokens;
+# and --beam-size 5 replaces the default greedy decode (which is more prone to repetition/hallucination loops)
+# with beam search. Beam search is slower; accuracy/reliability is preferred over speed here.
+ENTRYPOINT ["python3", "supervisor.py", "./build/bin/whisper-server", "--inference-path", "/v1/audio/transcriptions", "--vad", "--vad-threshold", "0.5", "--vad-min-speech-duration-ms", "0", "--vad-min-silence-duration-ms", "2000", "--vad-speech-pad-ms", "400", "--max-context", "0", "--suppress-nst", "--beam-size", "5"]
