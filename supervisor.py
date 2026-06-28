@@ -31,13 +31,17 @@ Configuration (all via environment):
   WHISPER_IDLE_TTL      seconds idle before the model is unloaded (default 300)
   WHISPER_START_TIMEOUT seconds to wait for the model to load (default 180)
   MODELS_DIR            directory the models live in / are downloaded to (default /models)
-  WHISPER_MODEL         ggml model name to ensure present (default large-v3)
+  WHISPER_MODEL         ggml model name to ensure present (default large-v2)
   VAD_MODEL             Silero VAD model name to ensure present (default silero-v5.1.2)
   WHISPER_CPP_DIR       whisper.cpp checkout holding the download scripts (default /app)
 
 The child command (the whisper-server binary and its flags) is passed as this
 script's own arguments; the supervisor appends --host/--port so the child binds
-the private internal port.
+the private internal port. It also fills in the model paths (-m and, when --vad is
+present, --vad-model) from WHISPER_MODEL / VAD_MODEL when the child command does not
+already specify them, so the model NAME lives in one place (the env) and the
+download target and the load path cannot drift apart. An explicit -m / --vad-model
+in the child command is respected and left untouched.
 """
 
 import http.client
@@ -59,7 +63,7 @@ IDLE_TTL = float(os.environ.get("WHISPER_IDLE_TTL", "300"))
 START_TIMEOUT = float(os.environ.get("WHISPER_START_TIMEOUT", "180"))
 
 MODELS_DIR = os.environ.get("MODELS_DIR", "/models")
-WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "large-v3")
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "large-v2")
 VAD_MODEL = os.environ.get("VAD_MODEL", "silero-v5.1.2")
 WHISPER_CPP_DIR = os.environ.get("WHISPER_CPP_DIR", "/app")
 
@@ -137,15 +141,36 @@ if not CHILD_BASE:
     sys.exit(2)
 
 
+def _with_model_paths(argv):
+    """Fill in the transcription (-m) and VAD (--vad-model) model paths from WHISPER_MODEL / VAD_MODEL when the
+    child command doesn't already give them, so the model name has a single source of truth (the env). A path the
+    caller specified explicitly is left as-is; --vad-model is only added when --vad is actually enabled."""
+    args = list(argv)
+    if not any(a in ("-m", "--model") for a in args):
+        args += ["-m", _model_path(WHISPER_MODEL)]
+    if "--vad" in args and not any(a in ("-vm", "--vad-model") for a in args):
+        args += ["--vad-model", _model_path(VAD_MODEL)]
+    return args
+
+
+CHILD_BASE = _with_model_paths(CHILD_BASE)
+
+
 def log(msg):
     print(f"[supervisor] {msg}", flush=True)
+
+
+def _model_path(model_name):
+    """The on-disk path of a ggml model in MODELS_DIR. The one place the ggml-<name>.bin naming lives, so the
+    download target and the load path (-m / --vad-model) are derived from the same rule and cannot drift."""
+    return os.path.join(MODELS_DIR, f"ggml-{model_name}.bin")
 
 
 def _ensure_model(script_name, model_name):
     """Download ggml-<model_name>.bin into MODELS_DIR via whisper.cpp's own script
     if it isn't already there. Both download-ggml-model.sh and download-vad-model.sh
     take the model name and an output directory and write ggml-<name>.bin into it."""
-    target = os.path.join(MODELS_DIR, f"ggml-{model_name}.bin")
+    target = _model_path(model_name)
     if os.path.exists(target) and os.path.getsize(target) > 0:
         log(f"model present: {target}")
         return
