@@ -67,6 +67,12 @@ WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "large-v2")
 VAD_MODEL = os.environ.get("VAD_MODEL", "silero-v5.1.2")
 WHISPER_CPP_DIR = os.environ.get("WHISPER_CPP_DIR", "/app")
 
+
+def _model_path(model_name):
+    """The on-disk path of a ggml model in MODELS_DIR. The one place the ggml-<name>.bin naming lives, so the
+    download target and the load path (-m / --vad-model) are derived from the same rule and cannot drift."""
+    return os.path.join(MODELS_DIR, f"ggml-{model_name}.bin")
+
 # Hop-by-hop headers must not be forwarded across a proxy hop (RFC 7230 6.1).
 HOP_BY_HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
@@ -158,12 +164,6 @@ CHILD_BASE = _with_model_paths(CHILD_BASE)
 
 def log(msg):
     print(f"[supervisor] {msg}", flush=True)
-
-
-def _model_path(model_name):
-    """The on-disk path of a ggml model in MODELS_DIR. The one place the ggml-<name>.bin naming lives, so the
-    download target and the load path (-m / --vad-model) are derived from the same rule and cannot drift."""
-    return os.path.join(MODELS_DIR, f"ggml-{model_name}.bin")
 
 
 def _ensure_model(script_name, model_name):
