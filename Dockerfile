@@ -8,6 +8,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 ARG AMDGPU_TARGETS=gfx1100;gfx1101;gfx1102;gfx1200;gfx1201
 
 # Install build dependencies and ffmpeg (essential for audio processing)
+# hipBLAS/rocBLAS are deliberately NOT installed here: the base image already carries the headers,
+# the cmake config packages find_package(hipblas/rocblas) needs, and the per-gfx device kernels.
+# Don't re-add hipblas-dev/rocblas-dev - ROCm 7 renamed everything to the amdrocm-blas* family
+# (amdrocm-blas-dev, amdrocm-blas-host, amdrocm-blas-gfxNNNN), so the old names now fail the build.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     cmake \
@@ -17,9 +21,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     ffmpeg \
     curl \
-    hipblas-dev \
-    rocblas-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Register /opt/rocm/lib with the dynamic linker. ROCm 7 ships no ld.so.conf.d entry of its own - it relies on
+# each of its own binaries carrying an RUNPATH - and cmake only writes that RUNPATH into the top-level
+# executables, not into libggml-hip.so. glibc does not inherit DT_RUNPATH transitively, so without this the
+# build succeeds but whisper-server dies at startup on "libhipblas.so.3: cannot open shared object file".
+RUN echo "/opt/rocm/lib" > /etc/ld.so.conf.d/rocm.conf && ldconfig
 
 WORKDIR /app
 
