@@ -30,6 +30,7 @@ Configuration (all via environment):
   INTERNAL_PORT         private port the real server binds (default 8081)
   WHISPER_IDLE_TTL      seconds idle before the model is unloaded (default 300)
   WHISPER_START_TIMEOUT seconds to wait for the model to load (default 180)
+  WHISPER_START_RETRIES extra attempts if the server dies while loading (default 1)
   MODELS_DIR            directory the models live in / are downloaded to (default /models)
   WHISPER_MODEL         ggml model name to ensure present (default large-v2)
   VAD_MODEL             Silero VAD model name to ensure present (default silero-v5.1.2)
@@ -44,6 +45,7 @@ download target and the load path cannot drift apart. An explicit -m / --vad-mod
 in the child command is respected and left untouched.
 """
 
+import collections
 import http.client
 import os
 import re
@@ -61,6 +63,11 @@ INTERNAL_HOST = "127.0.0.1"
 INTERNAL_PORT = int(os.environ.get("INTERNAL_PORT", "8081"))
 IDLE_TTL = float(os.environ.get("WHISPER_IDLE_TTL", "300"))
 START_TIMEOUT = float(os.environ.get("WHISPER_START_TIMEOUT", "180"))
+# A start can fail for a transient reason (most often another process holding the VRAM this one
+# needs on a shared GPU), so one retry turns a spurious 503 into a slightly slower success.
+START_RETRIES = int(os.environ.get("WHISPER_START_RETRIES", "1"))
+RETRY_DELAY = float(os.environ.get("WHISPER_START_RETRY_DELAY", "3"))
+CHILD_LOG_TAIL = 40  # child output lines kept so a startup failure can quote what it last said
 
 MODELS_DIR = os.environ.get("MODELS_DIR", "/models")
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "large-v2")
@@ -166,19 +173,39 @@ def log(msg):
     print(f"[supervisor] {msg}", flush=True)
 
 
+def _looks_like_ggml(path):
+    """True if the file starts with a ggml/GGUF magic. A model left behind by an interrupted or
+    redirected download (empty, truncated header, an HTML error page) is otherwise indistinguishable
+    from a good one by size alone, and whisper-server then dies on every single request forever."""
+    try:
+        with open(path, "rb") as fh:
+            # GGML_FILE_MAGIC is 0x67676d6c, written as a uint32, so it lands on disk as "lmgg" on a
+            # little-endian host; accept the other byte order and GGUF too rather than risk a false
+            # positive that throws away a perfectly good multi-GB model.
+            return fh.read(4) in (b"lmgg", b"ggml", b"GGUF")
+    except OSError:
+        return False
+
+
 def _ensure_model(script_name, model_name):
     """Download ggml-<model_name>.bin into MODELS_DIR via whisper.cpp's own script
     if it isn't already there. Both download-ggml-model.sh and download-vad-model.sh
     take the model name and an output directory and write ggml-<name>.bin into it."""
     target = _model_path(model_name)
     if os.path.exists(target) and os.path.getsize(target) > 0:
-        log(f"model present: {target}")
-        return
+        if _looks_like_ggml(target):
+            log(f"model present: {target}")
+            return
+        # The download script skips a target that already exists, so the bad file has to go first.
+        log(f"model {target} is not a ggml file (bad or interrupted download); re-downloading")
+        os.remove(target)
     script = os.path.join(WHISPER_CPP_DIR, "models", script_name)
     log(f"model {model_name} missing from {MODELS_DIR}; downloading once via {script_name}")
     subprocess.run(["bash", script, model_name, MODELS_DIR], check=True)
     if not (os.path.exists(target) and os.path.getsize(target) > 0):
         raise RuntimeError(f"download of {model_name} did not produce {target}")
+    if not _looks_like_ggml(target):
+        raise RuntimeError(f"download of {model_name} produced a non-ggml file at {target}")
     log(f"model ready: {target}")
 
 
@@ -194,6 +221,8 @@ class Manager:
     def __init__(self):
         self._lock = threading.Lock()
         self._proc = None
+        self._reader = None
+        self._tail = collections.deque(maxlen=CHILD_LOG_TAIL)
         self._inflight = 0
         self._last_activity = time.monotonic()
 
@@ -216,18 +245,78 @@ class Manager:
     def _ensure_started_locked(self):
         if self._running():
             return
+        last_error = None
+        for attempt in range(1, START_RETRIES + 2):
+            try:
+                self._start_once_locked()
+                return
+            except Exception as exc:
+                last_error = exc
+                self._stop_locked()  # reap the corpse (or kill a hung child) before trying again
+                if attempt <= START_RETRIES:
+                    log(f"start attempt {attempt} failed: {exc}; retrying in {RETRY_DELAY:.0f}s")
+                    time.sleep(RETRY_DELAY)
+        raise last_error
+
+    def _start_once_locked(self):
         cmd = CHILD_BASE + ["--host", INTERNAL_HOST, "--port", str(INTERNAL_PORT)]
         log(f"loading model: starting whisper-server on {INTERNAL_HOST}:{INTERNAL_PORT}")
-        self._proc = subprocess.Popen(cmd)
+        self._tail.clear()
+        # Pipe the child's stdout/stderr through us rather than letting it inherit ours: the reason a
+        # start failed is only ever in the child's own output, and inherited output is interleaved with
+        # everything else and gone by the time we raise.
+        self._proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, errors="replace", bufsize=1,
+        )
+        self._reader = threading.Thread(target=self._pump_output, args=(self._proc,), daemon=True)
+        self._reader.start()
         self._wait_ready()
+
+    def _pump_output(self, proc):
+        """Mirror the child's output into our log, keeping the last CHILD_LOG_TAIL lines so a failed
+        start can quote what it said. Runs without the manager lock; deque.append is atomic."""
+        try:
+            for line in proc.stdout:
+                line = line.rstrip("\n")
+                self._tail.append(line)
+                print(f"[whisper-server] {line}", flush=True)
+        except Exception:
+            pass  # the pipe is torn down on stop; nothing here is worth failing a request over
+        finally:
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
+
+    def _exit_reason(self, rc):
+        """Human-readable cause of a child exit: how it died, plus the last thing it printed."""
+        if self._reader is not None:
+            self._reader.join(timeout=2)  # let the final lines land before we quote them
+        if rc < 0:
+            # Compared by name, not by signal.SIGKILL etc: those constants are POSIX-only and this
+            # module is also imported on the Windows dev box, where a negative rc never occurs anyway.
+            try:
+                name = signal.Signals(-rc).name
+            except ValueError:
+                name = f"signal {-rc}"
+            how = f"killed by {name}"
+            if name == "SIGKILL":
+                how += " (usually the OOM killer: check host RAM and the container memory limit)"
+            elif name in ("SIGABRT", "SIGSEGV"):
+                how += " (typically a ggml/driver abort, e.g. a failed GPU allocation: check free VRAM)"
+        else:
+            how = f"exit code {rc}"
+        tail = " | ".join(list(self._tail)[-8:])
+        return f"{how}; last output: {tail}" if tail else f"{how}; it printed nothing"
 
     def _wait_ready(self):
         url = f"http://{INTERNAL_HOST}:{INTERNAL_PORT}/health"
         deadline = time.monotonic() + START_TIMEOUT
         while time.monotonic() < deadline:
-            if self._proc.poll() is not None:
-                self._proc = None
-                raise RuntimeError("whisper-server exited during startup")
+            rc = self._proc.poll()
+            if rc is not None:
+                raise RuntimeError(f"whisper-server exited during startup: {self._exit_reason(rc)}")
             try:
                 with urllib.request.urlopen(url, timeout=2) as resp:
                     if resp.status == 200:
@@ -236,8 +325,8 @@ class Manager:
             except Exception:
                 pass  # not listening yet; keep polling until the deadline
             time.sleep(0.5)
-        self._stop_locked()
-        raise RuntimeError("whisper-server did not become ready in time")
+        # The caller stops the child; it only has to die here, not tell us why it was slow.
+        raise RuntimeError(f"whisper-server did not become ready within {START_TIMEOUT:.0f}s")
 
     def maybe_unload(self):
         with self._lock:
@@ -250,15 +339,20 @@ class Manager:
 
     def _stop_locked(self):
         proc = self._proc
+        reader = self._reader
         self._proc = None
+        self._reader = None
         if proc is None:
             return
-        proc.terminate()
-        try:
-            proc.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        if reader is not None:
+            reader.join(timeout=5)  # drain the last of its output into the log before moving on
 
     def shutdown(self):
         with self._lock:

@@ -30,6 +30,8 @@ Tune it with environment variables (all optional):
 | --- | --- | --- |
 | `WHISPER_IDLE_TTL` | `300` | Seconds with no requests before the model is unloaded and its VRAM freed. |
 | `WHISPER_START_TIMEOUT` | `180` | Seconds to wait for the model to load before failing a request. |
+| `WHISPER_START_RETRIES` | `1` | Extra attempts if the server dies while loading (e.g. another process transiently holding the VRAM). |
+| `WHISPER_START_RETRY_DELAY` | `3` | Seconds between those attempts. |
 | `INTERNAL_PORT` | `8081` | Private port the underlying server binds; the public port stays `8080`. |
 
 The `/health` endpoint is answered by the supervisor directly, so health probes neither load the model nor keep it warm.
