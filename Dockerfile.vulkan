@@ -3,7 +3,7 @@
 # life of the process (a ROCm bug, not whisper.cpp); the Vulkan backend via Mesa RADV
 # does not, so the GPU idles properly even while the model is resident.
 # Transcription speed can differ from the HIP build, so benchmark before adopting it.
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 # Set non-interactive timezone to prevent tzdata from blocking the build.
 ENV DEBIAN_FRONTEND=noninteractive
