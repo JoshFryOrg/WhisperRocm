@@ -1,0 +1,5 @@
+# Dependabot's `github-actions` updater matches `uses:` declarations with an LF-only pattern, so a CRLF
+# workflow file makes an otherwise valid bump fail with `No files changed!`. These files are only ever read by
+# Linux runners and by Dependabot, so pinning them to LF costs nothing on a Windows checkout.
+.github/workflows/*.yml text eol=lf
+.github/workflows/*.yaml text eol=lf

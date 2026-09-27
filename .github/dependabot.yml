@@ -1,0 +1,50 @@
+# Dependabot keeps this repo's third-party versions moving, so a bump is a pull request to read rather than a
+# weekly scheduled rebuild that silently picks up whatever a floating tag points at that day.
+#
+# This is a public repo with no private feeds, so Dependabot runs on GitHub's own hosted runners and needs no
+# runner setup. Merging a Dependabot PR to the default branch is what triggers `publish.yml` to rebuild.
+#
+# EVERY ENTRY RUNS DAILY AT 06:00 Europe/London AND SETS `cooldown.default-days: 0`: an update is reported the
+# day it is published, and a person decides when to merge it rather than a timer.
+#
+# THIS FILE IS READ FROM THE DEFAULT BRANCH ONLY, so nothing happens until it is merged there.
+version: 2
+
+updates:
+  # ----------------------------------------------------------------------------------------------------------
+  # `.github/workflows/`. The workflow files must stay LF for this to work: the updater matches `uses:` with an
+  # LF-only pattern, so a CRLF file turns a valid bump into `No files changed!`. `.gitattributes` holds that.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "06:00"
+      timezone: "Europe/London"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    cooldown:
+      default-days: 0
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # ----------------------------------------------------------------------------------------------------------
+  # `Dockerfile` (ROCm, `rocm/dev-ubuntu-24.04`) and `Dockerfile.vulkan` (`ubuntu`). Both base images are pinned to a
+  # readable version, which is what lets this entry propose anything; a floating tag like `:latest` would opt
+  # an image out of this file while still looking maintained.
+  #
+  # The whisper.cpp source is a `git clone` pinned by `WHISPER_CPP_VERSION`, which Dependabot cannot see: bump
+  # that by hand, in both Dockerfiles together.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "06:00"
+      timezone: "Europe/London"
+    commit-message:
+      prefix: "build"
+      include: "scope"
+    cooldown:
+      default-days: 0

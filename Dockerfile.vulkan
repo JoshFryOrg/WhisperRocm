@@ -32,8 +32,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Clone the whisper.cpp repository.
-RUN git clone --depth=1 https://github.com/ggerganov/whisper.cpp.git .
+# Clone a pinned whisper.cpp release. Dependabot cannot see a git clone, so bump this by hand from
+# https://github.com/ggml-org/whisper.cpp/releases (keep it in step with Dockerfile).
+ARG WHISPER_CPP_VERSION=v1.9.4
+RUN git clone --depth=1 --branch "${WHISPER_CPP_VERSION}" https://github.com/ggml-org/whisper.cpp.git .
 
 # Configure and build with the Vulkan backend.
 # GGML_VULKAN=ON is what selects the Vulkan compute path instead of HIP/CUDA/CPU.

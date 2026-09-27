@@ -1,5 +1,6 @@
 # Use the official AMD ROCm development base image
-FROM rocm/dev-ubuntu-24.04:latest
+# Pinned to a version (not :latest) so Dependabot can read it and propose bumps as reviewable PRs.
+FROM rocm/dev-ubuntu-24.04:10.0.0-full
 
 # Set non-interactive timezone to prevent tzdata from blocking the build
 ENV DEBIAN_FRONTEND=noninteractive
@@ -31,8 +32,10 @@ RUN echo "/opt/rocm/lib" > /etc/ld.so.conf.d/rocm.conf && ldconfig
 
 WORKDIR /app
 
-# Clone the whisper.cpp repository
-RUN git clone --depth=1 https://github.com/ggerganov/whisper.cpp.git .
+# Clone a pinned whisper.cpp release. Dependabot cannot see a git clone, so bump this by hand from
+# https://github.com/ggml-org/whisper.cpp/releases.
+ARG WHISPER_CPP_VERSION=v1.9.4
+RUN git clone --depth=1 --branch "${WHISPER_CPP_VERSION}" https://github.com/ggml-org/whisper.cpp.git .
 
 # Configure and build with AMD HIP (ROCm) support.
 # The GGML_HIP=ON flag is what triggers the AMD GPU compilation.
