@@ -1,6 +1,6 @@
 # Use the official AMD ROCm development base image
 # Pinned to a version (not :latest) so Dependabot can read it and propose bumps as reviewable PRs.
-FROM rocm/dev-ubuntu-24.04:10.0.0-full
+FROM rocm/dev-ubuntu-24.04:10.1.0-full
 
 # Set non-interactive timezone to prevent tzdata from blocking the build
 ENV DEBIAN_FRONTEND=noninteractive
